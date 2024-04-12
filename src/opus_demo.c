@@ -30,10 +30,12 @@
 #include "config.h"
 #endif
 
+#define _POSIX_C_SOURCE 199309L
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
 #include <string.h>
+#include <time.h>
 #include "opus.h"
 #include "debug.h"
 #include "opus_types.h"
@@ -135,6 +137,7 @@ void print_usage( char* argv[] )
     fprintf(stderr, "-forcemono           : force mono encoding, even for stereo input\n" );
     fprintf(stderr, "-dtx                 : enable SILK DTX\n" );
     fprintf(stderr, "-loss <perc>         : optimize for loss percentage and simulate packet loss, in percent (0-100); default: 0\n" );
+    fprintf(stderr, "-sleep_ms <ms>       : sleep between frames. default: 0\n" );
 #ifdef ENABLE_LOSSGEN
     fprintf(stderr, "-sim_loss <perc>     : simulate realistic (bursty) packet loss from percentage, using generative model\n" );
 #endif
@@ -413,6 +416,11 @@ int main(int argc, char *argv[])
     int lost_count=0;
     FILE *packet_loss_file=NULL;
     int dred_duration=0;
+    struct timespec start, end;
+    int elapsed_time = 0;
+    int sleep_ms = 0;
+    struct timespec sleep_time;
+
 #ifdef ENABLE_OSCE_TRAINING_DATA
     int silk_random_switching = 0;
     int silk_frame_counter = 0;
@@ -585,6 +593,11 @@ int main(int argc, char *argv[])
             args++;
         } else if( strcmp( argv[ args ], "-loss" ) == 0 ) {
             packet_loss_perc = atoi( argv[ args + 1 ] );
+            args += 2;
+        } else if( strcmp( argv[ args ], "-sleep_ms" ) == 0 ) {
+            sleep_ms = atoi( argv[ args + 1 ] );
+            sleep_time.tv_sec = sleep_ms / 1000;
+            sleep_time.tv_nsec = (sleep_ms % 1000) * 1000000;
             args += 2;
 #ifdef ENABLE_LOSSGEN
         } else if( strcmp( argv[ args ], "-sim_loss" ) == 0 ) {
@@ -809,6 +822,9 @@ int main(int argc, char *argv[])
 #endif
     while (!stop)
     {
+        if (sleep_ms)
+            nanosleep(&sleep_time, NULL);
+
         if (delayed_celt)
         {
             frame_size = newsize;
@@ -996,6 +1012,10 @@ int main(int argc, char *argv[])
                 ret = opus_dred_parse(dred_dec, dred, data, len, IMIN(48000, IMAX(0, dred_input)), sampling_rate, &dred_end, 0);
                 dred_input = ret > 0 ? ret : 0;
             }
+
+            // Start timing
+            clock_gettime(CLOCK_MONOTONIC, &start);
+
             /* FIXME: Figure out how to trigger the decoder when the last packet of the file is lost. */
             for (fr=0;fr<run_decoder;fr++) {
                 opus_int32 output_samples=0;
@@ -1042,6 +1062,9 @@ int main(int argc, char *argv[])
                 }
                 tot_samples += output_samples;
             }
+
+            clock_gettime(CLOCK_MONOTONIC, &end);
+            elapsed_time += (int)((end.tv_sec - start.tv_sec) * 1000000 + (end.tv_nsec - start.tv_nsec) / 1000);
         }
 
         if (!encode_only)
@@ -1105,6 +1128,8 @@ int main(int argc, char *argv[])
     } else {
        fprintf(stderr, "bitrate statistics are undefined\n");
     }
+
+    fprintf(stderr, "elapsed_time: %d us per-frame: %d us count: %d\n", elapsed_time, count > 0 ? elapsed_time / count : 0, count);
     silk_TimerSave("opus_timing.txt");
     ret = EXIT_SUCCESS;
 failure:
